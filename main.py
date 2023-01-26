@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 import datasets
 import util.misc as utils
 from datasets import build_dataset, get_coco_api_from_dataset
-from engine import evaluate, train_one_epoch, evaluate_hoi_att, evaluate_hoi
+from engine import evaluate, train_one_epoch, evaluate_hoi_att, evaluate_hoi, vaw_train_one_epoch, evaluate_att
 from models import build_model
 from torch.utils.data.dataset import ConcatDataset
 from util.sampler import BatchSchedulerSampler, ComboBatchSampler
@@ -113,12 +113,12 @@ def get_args_parser():
                         help="Relative classification weight of the no-object class")
 
     # Attribute detection
-    parser.add_argument('--att_det', action='store_true',
-                        help="Train Attribute Detection head if the flag is provided")
+    # parser.add_argument('--att_det', action='store_true',
+    #                     help="Train Attribute Detection head if the flag is provided")
     
     # Attribute detection coeff
     parser.add_argument('--att_idx_loss_coef', default=1, type=float)
-    parser.add_argument('--att_loss_coef', default=1, type=float)
+    #parser.add_argument('--att_loss_coef', default=1, type=float)
     parser.add_argument('--set_cost_att', default=1, type=float,
                     help="Action coefficient in the matching cost")
 
@@ -199,6 +199,13 @@ def get_args_parser():
     parser.add_argument('--vis_demo',action='store_true')
     parser.add_argument('--iou_threshold', default=0.9,type=float,help='iou threshold value')
     
+    #attribute command
+    parser.add_argument('--num_att_classes', default=620, type=int,
+                        help='number of distributed processes')
+    parser.add_argument('--att_det', action='store_true')
+    parser.add_argument('--att_loss_type', type=str, default='focal',
+                        help='Loss type for the attribute classification')
+    parser.add_argument('--att_loss_coef', type=float, default=1)    
     
     return parser
 
@@ -248,7 +255,7 @@ def main(args):
         data_loader_val = [DataLoader(dv, args.batch_size, sampler=sv,
                                     drop_last=False, collate_fn=utils.collate_fn, num_workers=args.num_workers) for dv,sv in zip(dataset_val,sampler_val)]
        
-        #import pdb; pdb.set_trace()
+
     else:
         dataset_train = build_dataset(image_set='train', args=args)
         dataset_val = build_dataset(image_set='val', args=args)
@@ -270,10 +277,15 @@ def main(args):
                                     collate_fn=utils.collate_fn, num_workers=args.num_workers)
         data_loader_val = DataLoader(dataset_val, args.batch_size, sampler=sampler_val,
                                     drop_last=False, collate_fn=utils.collate_fn, num_workers=args.num_workers)
-    #import pdb;pdb.set_trace()
     
-    model, criterion, postprocessors = build_model(args)
-    model.to(device)
+    if args.att_det:
+        model, attribute_classifier, criterion, postprocessors = build_model(args)
+        model.to(device)
+        attribute_classifier.to(device)
+
+    else:
+        model, criterion, postprocessors = build_model(args)
+        model.to(device)
 
     model_without_ddp = model
     if args.distributed:
@@ -323,7 +335,10 @@ def main(args):
         model_without_ddp.load_state_dict(checkpoint['model'],strict=False)
         #import pdb; pdb.set_trace()
     if args.eval:
-        if args.hoi or args.att_det or args.mtl:
+        if args.att_det:
+            test_stats = evaluate_att(args.dataset_file, model, postprocessors, data_loader_val, args.subject_category_id, device)
+
+        if args.hoi or args.mtl:
             if args.mtl:
                 for dlv in data_loader_val:
                     test_stats,dataset_name = evaluate_hoi_att(args.dataset_file, model, postprocessors, dlv, args.subject_category_id, device, args)
@@ -418,12 +433,22 @@ def main(args):
     print("Start training")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            for st in sampler_train:
-                st.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch,
-            args.clip_max_norm,args.wandb, args)
+
+                
+        if args.att_det:
+            if args.distributed:
+                sampler_train.set_epoch(epoch)
+            train_stats = vaw_train_one_epoch(
+            model, attribute_classifier, criterion, data_loader_train, optimizer, device, epoch,
+            args.clip_max_norm)
+
+        else:
+            if args.distributed:
+                for st in sampler_train:
+                    st.set_epoch(epoch)
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train, optimizer, device, epoch,
+                args.clip_max_norm,args.wandb, args)
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
@@ -439,7 +464,13 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
         if (epoch+1)%1==0:
+
             if args.hoi or args.att_det or args.mtl:
+                
+                #not yet
+                if args.att_det:
+                    break
+                
                 #for multi task learning
                 if args.mtl:
                     for dlv in data_loader_val:

@@ -131,7 +131,7 @@ class DETRHOI(nn.Module):
         self.vis_demo = args.vis_demo
 
     def forward(self, samples: NestedTensor, dtype: str='', dataset:str=''):
-        
+        #import pdb; pdb.set_trace()
         if not isinstance(samples, NestedTensor): #type(samples):<class 'util.misc.NestedTensor'>
             samples = nested_tensor_from_tensor_list(samples)   
 
@@ -226,6 +226,7 @@ class DETRHOI(nn.Module):
             hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0]
 
         
+        #import pdb; pdb.set_trace()
         if self.mtl:
             #import pdb; pdb.set_trace()
             if dtype=='att':

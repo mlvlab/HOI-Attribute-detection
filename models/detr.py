@@ -24,6 +24,7 @@ from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
 from .hoi import (DETRHOI, DETRHOI_orig,SetCriterionHOI, SetCriterionHOI_orig,PostProcessHOI_ATT, PostProcessHOI_orig)
 from .transformer import build_transformer, build_transformer_div
 
+from .attr_cls import SetCriterionATT, build_attrclassifier, PostProcess_ATT
 
 
 class DETR(nn.Module):
@@ -383,16 +384,31 @@ def build(args):
         
 
     else:
-        if args.hoi or args.att_det:
+        if args.att_det:
+
+            #for encoder 
+            model = DETRHOI_orig(
+                backbone,
+                transformer,
+                num_obj_classes=args.num_obj_classes,
+                num_verb_classes=args.num_verb_classes,
+                num_queries=args.num_queries,
+                aux_loss=args.aux_loss,
+            )
+
+            #for attribute classifier
+            attribute_classifier = build_attrclassifier(args,backbone,transformer)
+
+        elif args.hoi:
             num_classes,cost_class,num_obj_classes={},{},{}
             if args.hoi:
                 num_classes.update({'hoi':args.num_verb_classes})
                 cost_class.update({'hoi':args.set_cost_verb_class})
                 # num_obj_classes.update({'hoi':args.num_obj_classes})
-            if args.att_det:
-                num_classes.update({'att':args.num_att_classes})
-                cost_class.update({'att':args.set_cost_att})
-                # num_obj_classes.update({'att':args.num_obj_att_classes})
+            # if args.att_det:
+            #     num_classes.update({'att':args.num_att_classes})
+            #     cost_class.update({'att':args.set_cost_att})
+            #     # num_obj_classes.update({'att':args.num_obj_att_classes})
             args.cost_class = cost_class
         #     model = DETRHOI(
         #     backbone,
@@ -422,7 +438,10 @@ def build(args):
             )
             if args.masks:
                 model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
-    matcher = build_matcher(args)
+    
+    if not args.att_det:
+        matcher = build_matcher(args)
+    
     weight_dict = {}
     if args.mtl:
         if 'hico' in args.mtl_data or 'vcoco' in args.mtl_data:
@@ -446,10 +465,8 @@ def build(args):
             weight_dict['loss_sub_giou'] = args.giou_loss_coef
             weight_dict['loss_obj_giou'] = args.giou_loss_coef
         elif args.att_det:
+            weight_dict['loss_att_obj_ce'] = args.obj_loss_coef
             weight_dict['loss_att_ce'] = args.att_loss_coef
-            weight_dict['loss_obj_ce'] = args.obj_loss_coef
-            weight_dict['loss_obj_bbox'] = args.bbox_loss_coef
-            weight_dict['loss_obj_giou'] = args.giou_loss_coef
         else:
             weight_dict['loss_ce'] = 1
             weight_dict['loss_bbox'] = args.bbox_loss_coef
@@ -486,7 +503,13 @@ def build(args):
                             weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses,
                             loss_type=args.loss_type,args=args)
     else:
-        if args.hoi or args.att_det:
+        if args.att_det:
+            losses = ['att_labels']
+            criterion = SetCriterionATT(num_att_classes=args.num_att_classes, weight_dict=weight_dict, losses=losses, loss_type=args.att_loss_type)
+            
+
+
+        elif args.hoi:
             num_classes={}
             if args.hoi:
                 
@@ -499,15 +522,15 @@ def build(args):
                 criterion = SetCriterionHOI_orig(args.num_obj_classes, args.num_queries, num_classes, matcher=matcher,
                                             weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses,
                                             verb_loss_type=args.loss_type)
-            if args.att_det:
+            # if args.att_det:
                 
-                num_classes.update({'vaw':args.num_att_classes})
-                losses = ['att_labels']
-                if args.update_obj_att:
-                    losses.extend(['att_obj_labels','att_obj_cardinality','obj_att_boxes'])
-                criterion = SetCriterionHOI(args.num_obj_classes, args.num_queries, num_classes, matcher=matcher,
-                                    weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses,
-                                    loss_type=args.loss_type,args=args)
+            #     num_classes.update({'vaw':args.num_att_classes})
+            #     losses = ['att_labels']
+            #     if args.update_obj_att:
+            #         losses.extend(['att_obj_labels','att_obj_cardinality','obj_att_boxes'])
+            #     criterion = SetCriterionHOI(args.num_obj_classes, args.num_queries, num_classes, matcher=matcher,
+            #                         weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses,
+            #                         loss_type=args.loss_type,args=args)
         else:
             losses = ['labels', 'boxes', 'cardinality']
             if args.masks:
@@ -515,9 +538,13 @@ def build(args):
             criterion = SetCriterion(num_classes, matcher=matcher, weight_dict=weight_dict,
                                     eos_coef=args.eos_coef, losses=losses)
     criterion.to(device)
-    if args.hoi or args.att_det or args.mtl:
+    if args.hoi or args.mtl:
         postprocessors = PostProcessHOI_ATT(args.subject_category_id)
         #postprocessors = {'hoi':PostProcessHOI_orig(args.subject_category_id)}
+    
+    elif args.att_det:
+        postprocessors = PostProcess_ATT()
+    
     else:
         postprocessors = {'bbox': PostProcess()}
         if args.masks:
@@ -525,5 +552,9 @@ def build(args):
             if args.dataset_file == "coco_panoptic":
                 is_thing_map = {i: i <= 90 for i in range(201)}
                 postprocessors["panoptic"] = PostProcessPanoptic(is_thing_map, threshold=0.85)
-    #import pdb; pdb.set_trace()
-    return model, criterion, postprocessors
+    
+    if args.att_det:
+        return model, attribute_classifier, criterion, postprocessors
+
+    else:
+        return model, criterion, postprocessors

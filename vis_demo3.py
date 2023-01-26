@@ -22,8 +22,7 @@ class Demo():
         self.video_path = args.video_file
         self.fps = args.fps
         self.output_dir = 'output_video/'+args.video_file.split('/')[-1]
-        # self.cap = cv2.VideoCapture(args.video_file) if not args.webcam else cv2.VideoCapture(args.webcam)
-        self.cap = cv2.VideoCapture(1)
+        self.cap = cv2.VideoCapture(args.video_file) if not args.webcam else cv2.VideoCapture(args.webcam)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.fourcc = cv2.VideoWriter_fourcc(*'XVID')
@@ -67,12 +66,11 @@ class Demo():
         sample = img.copy()
         sample, _ = transform(sample, None)
         dataset = args.inf_type #hico or vcoco or hoi or vaw
+        #import pdb; pdb.set_trace()
         if dataset == 'vaw':
             dtype = 'att'
         else: 
             dtype = 'hoi'
-
-        
         output = model(sample.unsqueeze(0).to(device))
         return output
                 
